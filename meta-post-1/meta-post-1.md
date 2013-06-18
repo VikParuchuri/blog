@@ -6,7 +6,7 @@ Intro
 
 You may have noticed that this site recently changed over from blogger to wordpress.  I made this change for a lot of reasons, which I will get into in more depth in a subsequent post.  
 
-In order to make this change, I setup a wordpress multisite installation.  A multisite installation is when one wordpress install lets you run multiple websites.  I like multisite because it enables me to flexibly manage multiple websites with less duplication of effort than a single wordpress installation for each website would allow me.
+In order to make this change, I setup a wordpress multisite installation with domain mapping.  A multisite installation is when one wordpress install lets you run multiple websites.  I like multisite because it enables me to flexibly manage multiple websites with less duplication of effort than a single wordpress installation for each website would allow me.
 
 Wordpress multisite normally works with subdomains (ie mail.google.com), but I combined the multisite mode with domain mapping to enable top-level domains to be used for each sub-site (so, we have vikparuchuri.com).
 
@@ -37,7 +37,7 @@ The git clone command will make a new directory where you cloned it called wp-de
 Starting the cloudformation stack
 ---------------------------
 
-After you have cloned the repository, you will be able to find the cloudformation template at `cloudformation/wordpress.json` .
+After you have cloned the repository, you will be able to find the cloudformation template at `wp-deployment/cloudformation/wordpress.json` .
 
 We will now need to login to an existing AWS account to use this template.  See [Amazon AWS](http://aws.amazon.com/) for details on making an account.
 
@@ -107,7 +107,9 @@ The outputs will tell you the ELB address (referred to from hereon as ELBAddress
 Setting up a local database
 ---------------------------
 
-We can now setup a local database for the wordpress instance.  Feel free to skip this if you will be using an external database.  Regardless of what database server you are using, it is still nice to have a user just for wordpress with limited access, though.
+We can now setup a local database for the wordpress instance.  Feel free to skip this if you will be using an external database.  Regardless of what database server you are using, it is still nice to have a user just for wordpress with limited access, though (this will automatically be setup later on).
+
+### Install mysql server
 
 Let's ssh into our instance:
 ```
@@ -122,7 +124,9 @@ sudo apt-get install mysql-server
 
 Set whatever root password you want, but make sure you save it somewhere.
 
-**The following steps in this section (creating a database, a user, and granting the relevant permissions), will be done automatically by ansible.  Only do it yourself if you want to understand the process or debug.**
+### Setup database/user/permissions
+
+**The following steps in this section (creating a database, a user, and granting the relevant permissions), will be done automatically.  Only do it yourself if you want to understand the process or debug.**
 
 Now, let's create a database, a database user, and give the user the right permissions.
 
@@ -178,10 +182,12 @@ Click create record set when you are done, and then do the same for the full dom
 
 We are now setup as far as what we need for the wordpress install.
 
-Setup for wordpress ansible deploy
+Setup for wordpress deployment
 ---------------------------
 
 We are now ready to do our basic wordpress configuration with ansible.  This will setup a basic single-site wordpress install.
+
+### Setup ansible
 
 On our local machine, let's go to the wp-deployment folder that we created earlier with git clone:
 
@@ -194,6 +200,8 @@ Now, using the python package manager pip, let's install the requirements.  Feel
 ````
 pip install -r requirements.txt
 ````
+
+### Set secret variables
 
 Ansible has a concept called playbooks.  Each playbook will match a certain subset of the potential hosts (in this case, the hosts are our ec2 instances, and subsets are the ones with the correct tags, which is why it was important to set tags earlier).
 
@@ -250,6 +258,8 @@ Deploying wordpress via ansible
 
 These instructions will setup a single site via wordpress, which can then be extended to be a multisite.
 
+### Inspecting the playbooks
+
 We will need to first go to the playbooks directory.
 
 ```
@@ -262,11 +272,13 @@ If you look at the roles folder, you will see two roles: "mu" and "wp".  The wp 
 
 Both roles have associated variables in their vars folder that you can edit if you want, but there is no real reason not to use the defaults.
 
+### Running the playbook
+
 We can now run `ansible-playbook -vvv --user=ubuntu  wp_prod.yml -i ./ec2.py  -c ssh`, and it will connect to our EC2 server and configure it with wordpress.
 
 If the command creates an error, you may have done the cloudformation configuration incorrectly and tagged your machines improperly.  You can look at the tags and fix this in the "hosts" section of the `wp_prod.yml` playbook.
 
-Once the ansible script finishes running, you can go to `YOUR_SERVER_NAME/wp-admin/install.php` on your server to begin wordpress installation.  `YOUR_SERVER_NAME` should be what you entered for `elb_address` in the template.  In this example, I set up route 53 to point to my ELB, and used the route 53 domain.
+Once the playbook finishes running, you can go to `YOUR_SERVER_NAME/wp-admin/install.php` on your server to begin wordpress installation.  `YOUR_SERVER_NAME` should be what you entered for `elb_address` in the template.  In this example, I set up route 53 to point to my ELB, and used the route 53 domain.
 
 
 Setting up wordpress
@@ -279,21 +291,24 @@ Once you finish the setup screens, congratulations!  You have setup a single use
 Activating multisite mode
 ---------------------------
 
+### Activation
+
 Now, to activate multisite mode for your wordpress install, you will have to go to the wp-admin, and then click on tools/network setup.  You can also go to the url `YOUR_SERVER_NAME/wp-admin/network.php`.
 
 You can then type in some settings to setup network mode.  Make sure you select sub-domains!
 
 ![activate network mode](img/wp_network.png)
 
-After you hit the install button, you will come to a screen that asks you to do some configuration.  You can ignore those steps for now, as we will be doing that through ansible.
+### Post activation
+
+After you hit the install button, you will come to a screen that asks you to do some configuration.  You can ignore those steps for now, as we will be doing that through an ansible playbook.
 
 If you see a "Warning! Wildcard DNS may not be configured correctly!" in red at the top, this means that you have not setup `*.YOUR_SERVER_ADDRESS.com` to redirect to the ELB.  You can do this using Route 53 alias records (see the previous section on this), or you can skip it for now.  All this means is that whenever you make another site in the multisite network, you will need to setup a redirect from `MULTISITE_NAME.YOUR_SERVER_ADDRESS.com` to the ELB (you need to do this even if you are using separate domain names for each of your sites on multisite).
 
-Configuring multisite mode with ansible
+Configuring multisite mode
 ---------------------------
 
-After activating multisite mode, you can then run the mu playbooks in ansible to setup multisite.
-
+After activating multisite mode, you can then run the mu playbook to setup multisite.
 
 ```
 cd wp-deployment/playbooks
@@ -305,17 +320,35 @@ And now you will be able to go to wp-admin on your site, and login.  Multisite m
 Making new sites
 ---------------------------
 
+### Set up a new site with a subdomain
+
 To make a new site, go to `YOUR_SERVER_ADDRESS/wp-admin/network/site-new.php`, and make a new site with a subdomain.
 
 ![new site](img/wp_addsite.png)
 
 Set up the DNS for that subdomain to redirect to your ELB, even if you are not using Route 53.
 
-Then, go to domain mapping in `YOUR_SERVER_ADDRESS/wp-admin/network/settings.php?page=dm_domains_admin` and set the id of the site (you can get this from the url when you click on a site in sites), and the domain.  Make sure that primary is checked. 
+
+### Using a top level domain
+
+If you want to use a top level domain, such as test.com, for the site:
+
+Go to domain mapping in `YOUR_SERVER_ADDRESS/wp-admin/network/settings.php?page=dm_domains_admin` and set the id of the site (you can get this from the url when you click on a site in sites), and the domain.  Make sure that primary is checked. 
 
 ![new domain](img/wp_adddomain.png)
 
+You will have to redirect the domain (www.test.com) and the apex domain (test.com) to your ELB.  You can do this via Route 53, and the instructions are above.
 
+Future post topics
+---------------------------
+
+There are some other useful things that I did to make wordpress easier to manage, and these include:
+* Setting up email via Amazon SES
+* Automated backups via xcloner
+* Migrating from blogger to wordpress and setting up redirects
+* Setting up a database using Amazon RDS
+
+I intend to post about these down the line, as time permits.  Please let me know if any of them are particularly interesting.
 
 
 
