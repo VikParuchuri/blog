@@ -43,9 +43,13 @@ We will now need to login to an existing AWS account to use this template.  See 
 
 One you login, you should be at the [management console](https://console.aws.amazon.com/console/home?#).  The management console allows you to interact with AWS resources.  In this case, we care about the [cloudformation section](https://console.aws.amazon.com/cloudformation/home).
 
-Once you are in the cloudformation console, you will be able to click on "create stack". ![create_stack](img/cf_console.png)
+Once you are in the cloudformation console, you will be able to click on "create stack". 
 
-After clicking on "create stack", you will need to choose to upload the wordpress.json template.  ![upload template](img/cf_template.png)
+![create_stack](img/cf_console.png)
+
+After clicking on "create stack", you will need to choose to upload the wordpress.json template.  
+
+![upload template](img/cf_template.png)
 
 Once you fill in the stack name and click "next", you will come to the "specify parameters" screen.  This is where the extensibility of cloudformation comes to the fore.  This template lets you specify a few different variables.
 
@@ -94,7 +98,9 @@ Stack outputs
 
 The stack should now have finished coming up.  If you see a red light and the status "ROLLBACK_COMPLETE", you should check "Events" under the stack detail to find the reason for the rollback.  Often, it is something like having typed a configuration setting in incorrectly.
 
-Now that the stack has been created, you can click on the stack in the console and check on the outputs.  ![upload template](img/cf_outputs.png)
+Now that the stack has been created, you can click on the stack in the console and check on the outputs.  
+
+![outputs](img/cf_outputs.png)
 
 The outputs will tell you the ELB address (referred to from hereon as ELBAddress) and the EC2 server address (referred to from hereon as ServerAddress).  Save both of these somewhere: you can access them here anytime, but we will need them in several places.
 
@@ -141,7 +147,7 @@ We are now done setting up the database, and we can move on to the other steps. 
 Setup Route53 to forward our domain to the ELB
 ---------------------------
 
-Route53 is Amazon's DNS management system, as I mentioned earlier.  It will allow us to point users who go to www.oursite.com to our ELB.
+Route53 is Amazon's DNS management system, as I mentioned earlier.  It will allow us to point users who go to www.oursite.com to our ELB.  **Feel free to skip this if you don't need this, or if you plan to manage your DNS some other way.  You will always be able to access your site via ELBAddress.**
 
 To use Route53, first go to the [Route53 Console](https://console.aws.amazon.com/route53/home?#).
 
@@ -149,9 +155,10 @@ Then, click on "Create Hosted Zone".
 
 This will pop up a box on the right that lets you enter your domain name. Enter your domain name without the www, and then click create hosted zone at the bottom.
 
-![upload template](img/53_hosted.png)
+![hosted zones](img/53_hosted.png)
 
-Your domain will now appear in the center panel.  Select your domain, and then look at "delegation sets" at the right.  ![upload template](img/53_delegation.png)
+Your domain will now appear in the center panel.  Select your domain, and then look at "delegation sets" at the right.  
+![dns entries](img/53_delegation.png)
 
 These are your namesevers, and you will need to set these as the DNS records with your registrar.  The AWS help at the top right will give you information on this if you have questions.
 
@@ -164,9 +171,10 @@ Select your domain in the Route 53 control panel, and the click on "go to record
 Now, you can click on "Create record set", which will pop up a box at the right.
 
 We will be making an alias record that points at our ELBAddress.  
-![upload template](img/53_ndomain.png)
+![naked domain redirect](img/53_ndomain.png)
 
-Click create record set when you are done, and then do the same for the full domain.  ![upload template](img/53_domain.png)
+Click create record set when you are done, and then do the same for the full domain.  
+![full domain redirect](img/53_domain.png)
 
 We are now setup as far as what we need for the wordpress install.
 
@@ -220,6 +228,92 @@ elb_address: INSERT_ELBAddress_HERE
 A note on the elb_address.  This is the site where your server will be accessed from.  If you have a domain that you want to access your site from that you just setup with route53 (ie vikparuchuri.com), then use that.  For multisite, make it the primary address you will be accessing from.  If you don't have a domain, using the ELBAddress is fine.
 
 Once your template looks good, you can save it without the .template extension (`wordpress_prod_vars.yml`).
+
+Boto configuration
+---------------------------
+
+Ansible needs to find your server, which it does via boto, which is a python utility to connect to Amazon AWS.  To configure boto, you will need to make a .boto file with your AWS credentials.
+
+Please see [these instructions](http://boto.readthedocs.org/en/latest/boto_config_tut.html) for more information on configuring boto.
+
+If boto is setup correctly, you will be able to run:
+
+```
+wp-deployment/playbooks
+./ec2.py
+```
+
+This should show you all your running EC2 servers.
+
+Deploying wordpress via ansible
+---------------------------
+
+These instructions will setup a single site via wordpress, which can then be extended to be a multisite.
+
+We will need to first go to the playbooks directory.
+
+```
+cd wp-deployment/playbooks
+```
+
+If you look at the folder, you will see that there are .yml files, which are the playbooks, and a roles folder, which contains the code that the playbooks actually run on the hosts.
+
+If you look at the roles folder, you will see two roles: "mu" and "wp".  The wp role will make a wordpress installation on a site, and the mu role will convert it to be a multisite installation.
+
+Both roles have associated variables in their vars folder that you can edit if you want, but there is no real reason not to use the defaults.
+
+We can now run `ansible-playbook -vvv --user=ubuntu  wp_prod.yml -i ./ec2.py  -c ssh`, and it will connect to our EC2 server and configure it with wordpress.
+
+If the command creates an error, you may have done the cloudformation configuration incorrectly and tagged your machines improperly.  You can look at the tags and fix this in the "hosts" section of the `wp_prod.yml` playbook.
+
+Once the ansible script finishes running, you can go to `YOUR_SERVER_NAME/wp-admin/install.php` on your server to begin wordpress installation.  `YOUR_SERVER_NAME` should be what you entered for `elb_address` in the template.  In this example, I set up route 53 to point to my ELB, and used the route 53 domain.
+
+
+Setting up wordpress
+---------------------------
+
+Once you can get to `YOUR_SERVER_NAME/wp-admin/install.php`, you can setup your site through the interface.  One note of caution : **do not use admin as your username.**  There are people who scan for the admin username and try to guess the password through brute force attacks.
+
+Once you finish the setup screens, congratulations!  You have setup a single user wordpress site.
+
+Activating multisite mode
+---------------------------
+
+Now, to activate multisite mode for your wordpress install, you will have to go to the wp-admin, and then click on tools/network setup.  You can also go to the url `YOUR_SERVER_NAME/wp-admin/network.php`.
+
+You can then type in some settings to setup network mode.  Make sure you select sub-domains!
+
+![activate network mode](img/wp_network.png)
+
+After you hit the install button, you will come to a screen that asks you to do some configuration.  You can ignore those steps for now, as we will be doing that through ansible.
+
+If you see a "Warning! Wildcard DNS may not be configured correctly!" in red at the top, this means that you have not setup `*.YOUR_SERVER_ADDRESS.com` to redirect to the ELB.  You can do this using Route 53 alias records (see the previous section on this), or you can skip it for now.  All this means is that whenever you make another site in the multisite network, you will need to setup a redirect from `MULTISITE_NAME.YOUR_SERVER_ADDRESS.com` to the ELB (you need to do this even if you are using separate domain names for each of your sites on multisite).
+
+Configuring multisite mode with ansible
+---------------------------
+
+After activating multisite mode, you can then run the mu playbooks in ansible to setup multisite.
+
+
+```
+cd wp-deployment/playbooks
+ansible-playbook -vvv --user=ubuntu  mu_prod.yml -i ./ec2.py  -c ssh
+```
+
+And now you will be able to go to wp-admin on your site, and login.  Multisite mode is now active, and you will be able to make a network of sites with their own domain names.
+
+Making new sites
+---------------------------
+
+To make a new site, go to `YOUR_SERVER_ADDRESS/wp-admin/network/site-new.php`, and make a new site with a subdomain.
+
+![new site](img/wp_addsite.png)
+
+Set up the DNS for that subdomain to redirect to your ELB, even if you are not using Route 53.
+
+Then, go to domain mapping in `YOUR_SERVER_ADDRESS/wp-admin/network/settings.php?page=dm_domains_admin` and set the id of the site (you can get this from the url when you click on a site in sites), and the domain.  Make sure that primary is checked. 
+
+![new domain](img/wp_adddomain.png)
 
 
 
