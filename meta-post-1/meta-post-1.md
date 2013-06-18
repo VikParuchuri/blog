@@ -1,19 +1,25 @@
-Creating a wordpress multisite install using cloudformation and ansible
+Creating a wordpress single or multisite install using cloudformation and ansible
 ========================================================
 
 Intro
 -------------------------
 
-You may have noticed that this site recently changed over from blogger to wordpress.  In order to make this change, I setup a wordpress multisite installation.  A multisite installation is when one wordpress install lets you run multiple websites.  I like multisite because it enables me to flexibly manage multiple websites with less duplication of effort than a single wordpress installation for each website would allow me.
+You may have noticed that this site recently changed over from blogger to wordpress.  I made this change for a lot of reasons, which I will get into in more depth in a subsequent post.  
+
+In order to make this change, I setup a wordpress multisite installation.  A multisite installation is when one wordpress install lets you run multiple websites.  I like multisite because it enables me to flexibly manage multiple websites with less duplication of effort than a single wordpress installation for each website would allow me.
 
 Wordpress multisite normally works with subdomains (ie mail.google.com), but I combined the multisite mode with domain mapping to enable top-level domains to be used for each sub-site (so, we have vikparuchuri.com).
 
-This post will be kind of a meta-post, where I go into the details of how I set the site up.  I am not a sysadmin by trade (what am I by trade, anyways?), but some new tools make it really simple to build repeatable configurations.  I can't stress the repeatable enough.  If you setup an installation "by hand" and run a lot of manual system commands, it will be extremely hard to reproduce if you need to run another site, or if you want to backup and re-initialize your site with different hardware.  To enable the configuration steps to be repeatable, I used the following technologies:
+This post will be kind of a meta-post, where I go into the details of how I set the site up.  I am not a sysadmin by trade (what am I by trade, anyways?), but some new tools make it really simple to build repeatable configurations.  I can't stress the repeatable part enough.  If you setup an installation "by hand" and run a lot of manual system commands, it will be extremely hard to reproduce if you need to run another site, or if you want to backup and re-initialize your site with different hardware.  It may take more initial work to make something repeatable, but it is well worth doing.  
+
+To enable the configuration steps to be repeatable, I used the following technologies:
 
 * [EC2](http://aws.amazon.com/ec2/) is an Amazon service that lets you create or shutdown servers on an on demand basis.  It is great for deploying websites in seconds.
 * [Route 53](http://aws.amazon.com/route53/) Route 53 is Amazon's DNS service.  It makes it incredibly simple to setup DNS records.
 * [CloudFormation](http://aws.amazon.com/cloudformation/) is another Amazon service that lets you use templates to create resource "stacks".  These resources can be servers (EC2), databases (RDS), and so on.  This lets you easily create and manage configurable resources.  In our case, it allows us to create our server and associated resources very easily.
 * [Ansible](http://www.ansibleworks.com/) is an open source project that allows for idempotent commands to be run by sshing into a server or group of servers.  In our case, it allows us to very easily configure our wordpress server.
+
+Before we get started, please note that these steps have been tested only on Ubuntu 12.10.  It will most likely work with windows, but some steps may need to be modified.
 
 Getting the code
 -------------------------
@@ -38,5 +44,187 @@ We will now need to login to an existing AWS account to use this template.  See 
 One you login, you should be at the [management console](https://console.aws.amazon.com/console/home?#).  The management console allows you to interact with AWS resources.  In this case, we care about the [cloudformation section](https://console.aws.amazon.com/cloudformation/home).
 
 Once you are in the cloudformation console, you will be able to click on "create stack". ![create_stack](img/cf_console.png)
+
+After clicking on "create stack", you will need to choose to upload the wordpress.json template.  ![upload template](img/cf_template.png)
+
+Once you fill in the stack name and click "next", you will come to the "specify parameters" screen.  This is where the extensibility of cloudformation comes to the fore.  This template lets you specify a few different variables.
+
+* SSHLocation - If you want to restrict SSH access, set this.  Otherwise, leave it at the default.
+* EnvironmentTag - If you want a stage or sandbox instance to test with, change this.  Otherwise, leave at prod.  This will not change anything with the instance, it will only change how the instance is tagged.  Ansible finds instances by how they are tagged (more on this later), so this is only if you want multiple types of servers with different configurations.
+* ApplicationTag - Again, this is only a tag, so it only affects how the instance is discovered.  I would recommend leaving it as the default.
+* KeyName - In your EC2 setup, you will need to specify keypairs that can SSH into your instances.  See the [user guide](http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/generating-a-keypair.html) for more info on this.  The KeyName is the name of the keypair that you want to use.  You will need to have it registered with EC2, and the private key will need to be on your computer.
+* InstanceType - How large of an [EC2 instance](http://aws.amazon.com/ec2/instance-types/#instance-details) you want to create.  I recommend not using the t1.micro, as it has not been fully tested (but if you are adventurous, feel free to test!).
+
+Once you have set these, you will need to check the box that says "I acknowledge that this template may created IAM resources."  [IAM resources](http://aws.amazon.com/iam/) are an Amazon feature that allow for multiple user roles with various access permissions.  In this case, we are creating a user for our wordpress server that has limited access.
+
+You can now hit "continue" through the next two screens (add tags and review).  Amazon will now get to work creating your stack!
+
+What is in the stack?
+---------------------------
+
+While the stack is being created, let's talk about what is actually being made.
+
+### IAM User
+
+As I alluded to before, cloudformation is making an IAM user.  IAM gives us greater security, because we are not keeping our main AWS credentials on the server we are making.  In this case, we are making a user that can access Amazon S3 (file storage), and send email via Amazon SES.  Access to S3 allows the instance to be "bootstrapped" with some needed applications when it is created.  Basically, the application downloads some basic applications from S3 and does some initial configuration.  This makes it simpler for us down the line.  Access to SES will let our wordpress instance send email to users (if we enable it).
+
+### EC2 Server
+
+The template will also create a server.  This server will run wordpress, once we set everything up.  It will need to have access to a database (or run a database locally).  It will run the Ubuntu OS.
+
+### ELB
+
+An ELB is an elastic load balancer.  It basically redirects from an external facing URL to a group of servers.  It is generally intended to balance load.  In our case, it serves two purposes.  Amazon Route 53 (which we will go into later) only allows naked domain redirection (ie vikparuchuri.com instead of www.vikparuchuri.com) unless we use an ELB.  It also allows us to swap servers in/out on the backend however we want later. 
+
+### Security Group
+
+A security group determines who can access our server, and from what ports.
+
+The database
+---------------------------
+
+You may have noticed that I did not include a database in the previous description of the stack.  This is because I wanted to make it as flexible as possible what database you use.  Also, including the database in a stack is a bit fraught with danger, because you risk losing all of your data if you accidentally delete a stack.
+
+You can either create a database locally on the EC2 server you have just made, or make a separate database server using [Amazon RDS](http://aws.amazon.com/rds/).  In my case, I used Amazon RDS because it makes it more flexible to add/remove servers without losing data.
+
+Feel free to use either option.  For the purposes of this tutorial, I will go with a local database, because RDS is a bit more complex to setup.
+
+Stack outputs
+---------------------------
+
+The stack should now have finished coming up.  If you see a red light and the status "ROLLBACK_COMPLETE", you should check "Events" under the stack detail to find the reason for the rollback.  Often, it is something like having typed a configuration setting in incorrectly.
+
+Now that the stack has been created, you can click on the stack in the console and check on the outputs.  ![upload template](img/cf_outputs.png)
+
+The outputs will tell you the ELB address (referred to from hereon as ELBAddress) and the EC2 server address (referred to from hereon as ServerAddress).  Save both of these somewhere: you can access them here anytime, but we will need them in several places.
+
+Setting up a local database
+---------------------------
+
+We can now setup a local database for the wordpress instance.  Feel free to skip this if you will be using an external database.  Regardless of what database server you are using, it is still nice to have a user just for wordpress with limited access, though.
+
+Let's ssh into our instance:
+```
+ssh ubuntu@ServerAddress
+```
+
+We will need to install mysql:
+
+```
+sudo apt-get install mysql-server
+```
+
+Set whatever root password you want, but make sure you save it somewhere.
+
+**The following steps in this section (creating a database, a user, and granting the relevant permissions), will be done automatically by ansible.  Only do it yourself if you want to understand the process or debug.**
+
+Now, let's create a database, a database user, and give the user the right permissions.
+
+````
+mysql -u root -p
+```
+
+Type in the password you set during the installation of mysql-server when it asks for a password.
+
+Once you are in the mysql shell:
+
+```
+CREATE DATABASE wordpress;
+CREATE USER wordpress IDENTIFIED BY '[insert password here]';
+GRANT SELECT,INSERT,UPDATE,DELETE ON wordpress.* TO 'wordpress'@'localhost';
+```
+
+Save your wordpress user password somewhere.
+
+We are now done setting up the database, and we can move on to the other steps.  Use `exit` to terminate the ssh connection.
+
+Setup Route53 to forward our domain to the ELB
+---------------------------
+
+Route53 is Amazon's DNS management system, as I mentioned earlier.  It will allow us to point users who go to www.oursite.com to our ELB.
+
+To use Route53, first go to the [Route53 Console](https://console.aws.amazon.com/route53/home?#).
+
+Then, click on "Create Hosted Zone".
+
+This will pop up a box on the right that lets you enter your domain name. Enter your domain name without the www, and then click create hosted zone at the bottom.
+
+![upload template](img/53_hosted.png)
+
+Your domain will now appear in the center panel.  Select your domain, and then look at "delegation sets" at the right.  ![upload template](img/53_delegation.png)
+
+These are your namesevers, and you will need to set these as the DNS records with your registrar.  The AWS help at the top right will give you information on this if you have questions.
+
+Once you have setup the nameserver configuration, you will need to setup the records to point at your wordpress elb (which will point to your server).
+
+To do this, you will need to setup two alias records, one for the "naked" domain (vikparuchuri.com), and one for the full domain (www.vikparuchuri.com).
+
+Select your domain in the Route 53 control panel, and the click on "go to record sets" at the top left.  This will bring you to a detail view of the record set.
+
+Now, you can click on "Create record set", which will pop up a box at the right.
+
+We will be making an alias record that points at our ELBAddress.  
+![upload template](img/53_ndomain.png)
+
+Click create record set when you are done, and then do the same for the full domain.  ![upload template](img/53_domain.png)
+
+We are now setup as far as what we need for the wordpress install.
+
+Setup for wordpress ansible deploy
+---------------------------
+
+We are now ready to do our basic wordpress configuration with ansible.  This will setup a basic single-site wordpress install.
+
+On our local machine, let's go to the wp-deployment folder that we created earlier with git clone:
+
+```
+cd wp-deployment
+```
+
+Now, using the python package manager pip, let's install the requirements.  Feel free to use a virtualenv or not use one for this.  A [virtualenv](http://www.virtualenv.org/en/latest/) is a python tool that allows you to isolate environments for each of your applications.  I highly recommend looking at [virtualenvwrapper](http://virtualenvwrapper.readthedocs.org/en/latest/) if you choose to use a virtualenv.
+
+````
+pip install -r requirements.txt
+````
+
+Ansible has a concept called playbooks.  Each playbook will match a certain subset of the potential hosts (in this case, the hosts are our ec2 instances, and subsets are the ones with the correct tags, which is why it was important to set tags earlier).
+
+Playbooks will run certain commands on a certain set of hosts.  In this case, we want to run the commands to correctly setup wordpress.
+
+Get the template file from `secrets/vars/wordpress_prod_vars.yml.template`.  Then, edit the values to reflect what you need.
+
+The values from `auth_key` to `nonce_salt` are wordpress internal secret variables (salts).  You can generate random ones [here](https://api.wordpress.org/secret-key/1.1/salt/).  When you insert them into the template, make sure that you put them between the quotes.  The single quotes need to be there.
+
+Your final template should look something like this (**don't use these salts, generate your own!**).
+
+```
+database_user: wordpress
+database_password: INSERT_PASSWORD_HERE
+
+database_host: localhost
+database_root_user: root
+database_root_password: INSERT_ROOT_PASSWORD_HERE 
+
+auth_key: '!UCVyMfA4q6~GOt]hr9!{9H/Ec8*rs9,9Ow|~n0pEbRacmLnD~Bb]GC9DW9/n+;k'
+secure_auth_key: ':rg-V/}0h`0]Sx]/tR6YByYwulzT<TXd_tD^&CBY$+b$H`yxA{*`Bv! -Mmwqp ('
+logged_in_key: '/QA}nvBwLjVIY>CPH(.}FQ%&)@e((yCn_V`RrVg>@[YiyX]DX9{q@&@H|!O7PiE@'
+nonce_key: 'O!,(tiA;C,$]v&:,N6^60wT<-hq/p sF])0)Y9(pQ`u0!.J,;KYU]n%oTD]$o{Oq'
+auth_salt: '>@E7siI)e|;rc@ qwo^9GX}D O+9DEh6@hd%PifC/yyvaH?c8)+7swV-D9=%WJF1'
+secure_auth_salt: 'YLKK+W&Lrx-/4@r<1[AW9>v&Sg|HnZ. c)N`NNvBe!gc=`5[bqjSisslF+:L1x G'
+logged_in_salt: '@AzQQr#}5;QD<iDSu#)|wM(UQ7?LV#I|F` ]=:LnFN`-!)1i!!I>a96iaqE*y[1+'
+nonce_salt: '39OSa0v~!=vh0j[YXOmR?,tq-G]x:uphoNaO)Hj..&|2Dg@G:S|#}QZ@49+b46j5'
+
+elb_address: INSERT_ELBAddress_HERE
+```
+
+A note on the elb_address.  This is the site where your server will be accessed from.  If you have a domain that you want to access your site from that you just setup with route53 (ie vikparuchuri.com), then use that.  For multisite, make it the primary address you will be accessing from.  If you don't have a domain, using the ELBAddress is fine.
+
+Once your template looks good, you can save it without the .template extension (`wordpress_prod_vars.yml`).
+
+
+
+
+
+
 
 
