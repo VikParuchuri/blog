@@ -8,9 +8,37 @@ You may have noticed that this site recently changed over from blogger to wordpr
 
 In order to make this change, I setup a wordpress multisite installation with domain mapping.  A multisite installation is when one wordpress install lets you run multiple websites.  I like multisite because it enables me to flexibly manage multiple websites with less duplication of effort than a single wordpress installation for each website would allow me.
 
-Wordpress multisite normally works with subdomains (ie mail.google.com), but I combined the multisite mode with domain mapping to enable top-level domains to be used for each sub-site (so, we have vikparuchuri.com).
+Wordpress multisite normally works with subdomains (ie mail.google.com), but I combined the multisite mode with [domain mapping](http://wordpress.org/plugins/wordpress-mu-domain-mapping/) to enable top-level domains to be used for each sub-site (so, we have vikparuchuri.com).
 
-This post will be kind of a meta-post, where I go into the details of how I set the site up.  I am not a sysadmin by trade (what am I by trade, anyways?), but some new tools make it really simple to build repeatable configurations.  I can't stress the repeatable part enough.  If you setup an installation "by hand" and run a lot of manual system commands, it will be extremely hard to reproduce if you need to run another site, or if you want to backup and re-initialize your site with different hardware.  It may take more initial work to make something repeatable, but it is well worth doing.  
+This post will be kind of a meta-post, where I go into the details of how I set the site up.  I am not a sysadmin by trade (what am I by trade, anyways?), but some new tools make it really simple to build repeatable configurations.  I can't stress the repeatable part enough.  If you setup an installation "by hand" and run a lot of manual system commands, it will be extremely hard to reproduce if you need to run another site, or if you want to backup and re-initialize your site with different hardware.  It may take more initial work to make something repeatable, but it is well worth doing.
+
+Feel free to contact me if you have any questions about this process.  Note that these steps have been tested only on Ubuntu 12.10.  It will most likely work with windows, but some steps may need to be modified.
+
+High level questions
+-------------------------
+
+### What will this post help me do?
+* Setup your own wordpress server for your personal blog.
+* Setup your own wordpress server for several of your own websites.
+* Setup a wordpress server that allows users to register their own sites automatically.
+
+### Why setup your own wordpress server?
+* Often cheaper than using a hosted solution.
+* You get more control over your data.
+* Can install plugins/themes as you want.
+* Quicker to make system-level changes such as package installation, switching domains, etc.
+* Easier and more customizable scaling.
+
+### Why use multisite?
+
+These instructions can be used to setup a single site or a multisite, but there are some advantages to using a multisite rather than setting up several single sites.
+
+* Higher upfront time to setup, but much easier to setup each individual site after that.
+* Central plugin and backup management.
+* Easier to scale and manage.
+
+Technologies Used
+-------------------------
 
 To enable the configuration steps to be repeatable, I used the following technologies:
 
@@ -18,8 +46,6 @@ To enable the configuration steps to be repeatable, I used the following technol
 * [Route 53](http://aws.amazon.com/route53/) Route 53 is Amazon's DNS service.  It makes it incredibly simple to setup DNS records.
 * [CloudFormation](http://aws.amazon.com/cloudformation/) is another Amazon service that lets you use templates to create resource "stacks".  These resources can be servers (EC2), databases (RDS), and so on.  This lets you easily create and manage configurable resources.  In our case, it allows us to create our server and associated resources very easily.
 * [Ansible](http://www.ansibleworks.com/) is an open source project that allows for idempotent commands to be run by sshing into a server or group of servers.  In our case, it allows us to very easily configure our wordpress server.
-
-Before we get started, please note that these steps have been tested only on Ubuntu 12.10.  It will most likely work with windows, but some steps may need to be modified.
 
 Getting the code
 -------------------------
@@ -43,7 +69,7 @@ We will now need to login to an existing AWS account to use this template.  See 
 
 One you login, you should be at the [management console](https://console.aws.amazon.com/console/home?#).  The management console allows you to interact with AWS resources.  In this case, we care about the [cloudformation section](https://console.aws.amazon.com/cloudformation/home).
 
-Once you are in the cloudformation console, you will be able to click on "create stack". 
+Once you are in the cloudformation console, you will be able to click on "create stack".  **Note that creating a stack will cost money.**  You can use [this tool](http://calculator.s3.amazonaws.com/calc5.html) to estimate your cost.
 
 ![create_stack](img/cf_console.png)
 
@@ -70,7 +96,7 @@ While the stack is being created, let's talk about what is actually being made.
 
 ### IAM User
 
-As I alluded to before, cloudformation is making an IAM user.  IAM gives us greater security, because we are not keeping our main AWS credentials on the server we are making.  In this case, we are making a user that can access Amazon S3 (file storage), and send email via Amazon SES.  Access to S3 allows the instance to be "bootstrapped" with some needed applications when it is created.  Basically, the application downloads some basic applications from S3 and does some initial configuration.  This makes it simpler for us down the line.  Access to SES will let our wordpress instance send email to users (if we enable it).
+As I alluded to before, cloudformation is making an IAM user.  IAM gives us greater security, because we are not keeping our main AWS credentials on the server we are making.  In this case, we are making a user that can access Amazon S3 (file storage), and send email via Amazon SES.  Access to S3 allows the instance to be "bootstrapped" with some needed applications when it is created.  Basically, the application downloads some basic applications from S3 and does some initial configuration.  This makes it simpler for us down the line.  Access to SES will let our wordpress instance send email to users (if we enable it), and it will let us backup our wordpress installation to S3 (again, if we enable it).
 
 ### EC2 Server
 
@@ -78,7 +104,7 @@ The template will also create a server.  This server will run wordpress, once we
 
 ### ELB
 
-An ELB is an elastic load balancer.  It basically redirects from an external facing URL to a group of servers.  It is generally intended to balance load.  In our case, it serves two purposes.  Amazon Route 53 (which we will go into later) only allows naked domain redirection (ie vikparuchuri.com instead of www.vikparuchuri.com) unless we use an ELB.  It also allows us to swap servers in/out on the backend however we want later. 
+An ELB is an elastic load balancer.  It basically redirects from an external facing URL to a group of servers.  It is generally intended to balance load between several machines.  In our case, it serves two purposes.  Amazon Route 53 (which we will go into later) does not allow naked domain redirection (ie vikparuchuri.com instead of www.vikparuchuri.com) unless we use an ELB. The ELB also allows us to swap servers in/out on the backend however we want later. 
 
 ### Security Group
 
@@ -89,7 +115,7 @@ The database
 
 You may have noticed that I did not include a database in the previous description of the stack.  This is because I wanted to make it as flexible as possible what database you use.  Also, including the database in a stack is a bit fraught with danger, because you risk losing all of your data if you accidentally delete a stack.
 
-You can either create a database locally on the EC2 server you have just made, or make a separate database server using [Amazon RDS](http://aws.amazon.com/rds/).  In my case, I used Amazon RDS because it makes it more flexible to add/remove servers without losing data.
+You can either create a database locally on the EC2 server you have just made, or make a separate database server using [Amazon RDS](http://aws.amazon.com/rds/).  In my case, I used Amazon RDS because it makes it more flexible to add/remove EC2 servers without losing data.
 
 Feel free to use either option.  For the purposes of this tutorial, I will go with a local database, because RDS is a bit more complex to setup.
 
@@ -195,6 +221,8 @@ On our local machine, let's go to the wp-deployment folder that we created earli
 cd wp-deployment
 ```
 
+You will need to be running python 2.6+ before doing the following step.  See [this link](http://askubuntu.com/questions/101591/how-do-i-install-python-2-7-2-on-ubuntu) for how to install python on ubuntu.  You will also need `pip`, which you can get by doing `easy_install pip` after python is installed.  See [this link](http://myadventuresincoding.wordpress.com/2011/09/11/python-upgrading-python-with-easy_install-pip-and-virtualenv-on-a-mac/) for a description of how to do this on a mac, and [this link](http://stackoverflow.com/questions/4750806/how-to-install-pip-on-windows) for how to do this on windows.
+
 Now, using the python package manager pip, let's install the requirements.  Feel free to use a virtualenv or not use one for this.  A [virtualenv](http://www.virtualenv.org/en/latest/) is a python tool that allows you to isolate environments for each of your applications.  I highly recommend looking at [virtualenvwrapper](http://virtualenvwrapper.readthedocs.org/en/latest/) if you choose to use a virtualenv.
 
 ````
@@ -247,7 +275,7 @@ Please see [these instructions](http://boto.readthedocs.org/en/latest/boto_confi
 If boto is setup correctly, you will be able to run:
 
 ```
-wp-deployment/playbooks
+cd wp-deployment/playbooks
 ./ec2.py
 ```
 
@@ -326,8 +354,7 @@ To make a new site, go to `YOUR_SERVER_ADDRESS/wp-admin/network/site-new.php`, a
 
 ![new site](img/wp_addsite.png)
 
-Set up the DNS for that subdomain to redirect to your ELB, even if you are not using Route 53.
-
+Set up the DNS for that subdomain to redirect to your ELB, even if you are not using Route 53.  If you already have a wildcard redirect, then you can skip this.
 
 ### Using a top level domain
 
@@ -338,6 +365,11 @@ Go to domain mapping in `YOUR_SERVER_ADDRESS/wp-admin/network/settings.php?page=
 ![new domain](img/wp_adddomain.png)
 
 You will have to redirect the domain (www.test.com) and the apex domain (test.com) to your ELB.  You can do this via Route 53, and the instructions are above.
+
+Modifications/Contributions
+---------------------------
+
+The code for the cloudformation template and the ansible playbooks is on [github](https://github.com/vikparuchuri/wp-deployment), so please feel free to fork and submit a pull request if you want to change something.
 
 Future post topics
 ---------------------------
@@ -350,9 +382,3 @@ There are some other useful things that I did to make wordpress easier to manage
 * Setting up email/calendar using Google Apps
 
 I intend to post about these down the line, as time permits.  Please let me know if any of them are particularly interesting.
-
-
-
-
-
-
